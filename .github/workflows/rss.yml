@@ -1,1 +1,39 @@
+name: Generate Oricon RSS Feed
 
+on:
+  schedule:
+    - cron: '0 */3 * * *'  # Run every 3 hours
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  generate-rss:
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: write
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        pip install requests beautifulsoup4
+    
+    - name: Generate RSS feed
+      run: |
+        python oricon_rss_generator.py -o docs/feed.xml
+      continue-on-error: true
+    
+    - name: Commit and push if changed
+      run: |
+        git config --global user.name 'GitHub Action Bot'
+        git config --global user.email 'action@github.com'
+        mkdir -p docs
+        git add docs/feed.xml || true
+        git diff --quiet && git diff --staged --quiet || (git commit -m "Update RSS feed $(date)" && git push)
