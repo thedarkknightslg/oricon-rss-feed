@@ -10,11 +10,13 @@ class OriconRSSGenerator:
         self.base_url = "https://us.oricon-group.com"
         self.category_url = f"{self.base_url}/category/anime/"
         
-        # Use CORS proxies to bypass blocking
+        # Multiple free proxies
         self.proxies = [
             "https://api.allorigins.win/raw?url=",
             "https://corsproxy.io/?",
-            "https://api.codetabs.com/v1/proxy?quest="
+            "https://api.codetabs.com/v1/proxy?quest=",
+            "https://proxy.cors.sh/",
+            "https://thingproxy.freeboard.io/fetch/",
         ]
         
         self.session = requests.Session()
@@ -26,77 +28,90 @@ class OriconRSSGenerator:
     def fetch_page(self):
         print(f"Fetching: {self.category_url}")
         
-        # Try direct first
+        # Try direct
         try:
-            print("Trying direct access...")
+            print("Trying direct...")
             response = self.session.get(self.category_url, timeout=30)
-            if response.status_code == 200 and len(response.text) > 1000:
-                print("Direct access successful!")
+            if response.status_code == 200 and len(response.text) > 5000:
+                print(f"Direct worked! ({len(response.text)} bytes)")
                 return response.text
         except Exception as e:
             print(f"Direct failed: {e}")
         
         # Try proxies
-        for proxy in self.proxies:
+        for i, proxy in enumerate(self.proxies, 1):
             try:
-                print(f"Trying proxy: {proxy}")
-                proxy_url = proxy + self.category_url
-                response = self.session.get(proxy_url, timeout=30)
+                from urllib.parse import quote
+                proxy_url = proxy + quote(self.category_url, safe='') if '?' in proxy else proxy + self.category_url
                 
-                if response.status_code == 200 and len(response.text) > 1000:
-                    print(f"Proxy worked: {proxy}")
+                print(f"Trying proxy {i}...")
+                response = self.session.get(proxy_url, timeout=45)
+                
+                if response.status_code == 200 and len(response.text) > 5000:
+                    print(f"Proxy {i} worked! ({len(response.text)} bytes)")
                     return response.text
+                else:
+                    print(f"Proxy {i}: {response.status_code}, {len(response.text)} bytes")
+                    
             except Exception as e:
-                print(f"Proxy failed: {e}")
-                continue
-            time.sleep(1)
+                print(f"Proxy {i} failed: {str(e)[:80]}")
+            
+            time.sleep(2)
         
+        print("All methods failed!")
         return None
     
     def parse_articles(self, html):
         soup = BeautifulSoup(html, 'html.parser')
         articles = []
         
-        selectors = ['article', '.article-item', '[class*="article"]', 'a[href*="/anime/"]', 'h2 a']
+        selectors = [
+            'article',
+            '[class*="post"]',
+            '[class*="article"]',
+            'a[href*="/anime/"]',
+            'h2 a',
+            'h3 a'
+        ]
         
         elements = []
         for selector in selectors:
             elements = soup.select(selector)
-            if elements:
+            if len(elements) >= 3:
                 print(f"Found {len(elements)} with: {selector}")
                 break
         
         if not elements:
-            articles.append({
-                'title': 'Oricon Anime News',
-                'link': self.category_url,
-                'description': 'Visit Oricon for anime news',
-                'pubDate': datetime.now().strftime('%a, %d %b %Y %H:%M:%S +0000'),
-                'image': None
-            })
-            return articles
+            return self._placeholder()
         
-        for elem in elements[:20]:
+        seen = set()
+        for elem in elements[:50]:
             try:
                 title_elem = elem.find(['h1', 'h2', 'h3']) or elem
                 title = title_elem.get_text(strip=True)
                 
-                if not title or len(title) < 5:
+                if not title or len(title) < 10:
                     continue
                 
                 link_elem = elem if elem.name == 'a' else elem.find('a')
-                if not link_elem or not link_elem.get('href'):
+                if not link_elem:
                     continue
                 
-                href = link_elem['href']
+                href = link_elem.get('href', '')
+                if not href or href.startswith(('#', 'javascript:', 'mailto:')):
+                    continue
+                
                 link = href if href.startswith('http') else self.base_url + href
+                
+                if link in seen:
+                    continue
+                seen.add(link)
                 
                 desc_elem = elem.find('p')
                 description = desc_elem.get_text(strip=True) if desc_elem else title
-                if len(description) > 300:
-                    description = description[:297] + "..."
+                if len(description) > 400:
+                    description = description[:397] + "..."
                 
-                date_elem = elem.find('time')
                 pubDate = datetime.now().strftime('%a, %d %b %Y %H:%M:%S +0000')
                 
                 img_elem = elem.find('img')
@@ -113,10 +128,27 @@ class OriconRSSGenerator:
                     'pubDate': pubDate,
                     'image': image
                 })
-            except:
+                
+                if len(articles) >= 20:
+                    break
+                    
+            except Exception as e:
                 continue
         
+        if not articles:
+            return self._placeholder()
+        
+        print(f"Extracted {len(articles)} articles")
         return articles
+    
+    def _placeholder(self):
+        return [{
+            'title': 'Oricon Anime News - Feed Temporarily Unavailable',
+            'link': self.category_url,
+            'description': 'Unable to fetch news. The feed will retry automatically.',
+            'pubDate': datetime.now().strftime('%a, %d %b %Y %H:%M:%S +0000'),
+            'image': None
+        }]
     
     def generate_rss(self, articles):
         now = datetime.now().strftime('%a, %d %b %Y %H:%M:%S +0000')
@@ -131,8 +163,8 @@ class OriconRSSGenerator:
 '''
         
         for article in articles:
-            title = article['title'].replace('&', '&amp;')
-            description = article['description'].replace('&', '&amp;')
+            title = article['title'].replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+            description = article['description'].replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
             
             xml += f'''    <item>
       <title><![CDATA[{title}]]></title>
@@ -152,33 +184,16 @@ class OriconRSSGenerator:
         return xml
     
     def generate(self, output_file):
+        print("=== ORICON RSS GENERATOR ===")
+        
         html = self.fetch_page()
-        
-        if not html:
-            articles = [{
-                'title': 'Feed Temporarily Unavailable',
-                'link': self.category_url,
-                'description': 'Check back later',
-                'pubDate': datetime.now().strftime('%a, %d %b %Y %H:%M:%S +0000'),
-                'image': None
-            }]
-        else:
-            articles = self.parse_articles(html)
-            if not articles:
-                articles = [{
-                    'title': 'No Articles Found',
-                    'link': self.category_url,
-                    'description': 'Visit Oricon directly',
-                    'pubDate': datetime.now().strftime('%a, %d %b %Y %H:%M:%S +0000'),
-                    'image': None
-                }]
-        
+        articles = self.parse_articles(html) if html else self._placeholder()
         rss_xml = self.generate_rss(articles)
         
         with open(output_file, 'w', encoding='utf-8') as f:
             f.write(rss_xml)
         
-        print(f"Generated {len(articles)} articles")
+        print(f"Generated {len(articles)} articles to {output_file}")
         return True
 
 if __name__ == '__main__':
@@ -189,3 +204,4 @@ if __name__ == '__main__':
     
     generator = OriconRSSGenerator()
     generator.generate(args.output)
+                
